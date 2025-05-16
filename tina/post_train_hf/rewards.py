@@ -5,8 +5,9 @@ from typing import Callable, Dict, Optional
 from latex2sympy2_extended import NormalizationConfig
 from math_verify import LatexExtractionConfig, parse, verify
 
-
+# 判断两个表达式的值是否相等
 def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str], **kwargs) -> list[Optional[float]]:
+    # completions 模型生成的答案列表  solition 标准答案
     """Reward function that checks if the completion is the same as the ground truth."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
@@ -16,18 +17,18 @@ def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str]
             extraction_mode="first_match",
         )
         if len(gold_parsed) != 0:
-            # We require the answer to be provided in correct latex (no malformed operators)
+            # 要求以正确的 latex 提供答案（无格式错误的运算符）
             answer_parsed = parse(
-                content,
+                content, # 某个答案
                 extraction_config=[
                     LatexExtractionConfig(
                         normalization_config=NormalizationConfig(
                             nits=False,
-                            malformed_operators=False,
+                            malformed_operators=False, # 不允许操作符不合法
                             basic_latex=True,
                             equations=True,
-                            boxed="all",
-                            units=True,
+                            boxed="all", # 要求所有公式都被包裹在 <boxed> 标签中
+                            units=True, # 允许带有单位
                         ),
                         # Ensures that boxed is tried first
                         boxed_match_priority=0,
@@ -46,14 +47,12 @@ def accuracy_reward(completions: list[list[dict[str, str]]], solution: list[str]
             # If the gold solution is not parseable, we assign `None` to skip this example
             reward = None
             print("Failed to parse gold solution: ", sol)
-        rewards.append(reward)
+        rewards.append(reward) # 返回每个答案的奖励
 
     return rewards
 
-
+# 是否存在<think> 粗略
 def format_reward(completions, **kwargs):
-    """Reward function that checks if the reasoning process is enclosed within <think> and </think> tags, while the final answer is enclosed within <answer> and </answer> tags."""
-
     def count_tags(text: str) -> float:
         count = 0.0
         # We only count </think> tag, because <think> tag is available in system prompt
@@ -64,13 +63,8 @@ def format_reward(completions, **kwargs):
     contents = [completion[0]["content"] for completion in completions]
     return [count_tags(c) for c in contents]
 
-
+# 是否在有<think>和</think> 细致
 def tag_count_reward(completions, **kwargs) -> list[float]:
-    """Reward function that checks if we produce the desired number of think and answer tags associated with `format_reward()`.
-
-    Adapted from: https://gist.github.com/willccbb/4676755236bb08cab5f4e54a0475d6fb#file-grpo_demo-py-L90
-    """
-
     def count_tags(text: str) -> float:
         count = 0.0
         if text.count("<think>\n") == 1:
@@ -82,7 +76,7 @@ def tag_count_reward(completions, **kwargs) -> list[float]:
     contents = [completion[0]["content"] for completion in completions]
     return [count_tags(c) for c in contents]
 
-
+# 是否展示推理过程
 def reasoning_steps_reward(completions, **kwargs):
     r"""Reward function that checks for clear step-by-step reasoning.
     Regex pattern:
@@ -99,7 +93,7 @@ def reasoning_steps_reward(completions, **kwargs):
     # Magic number 3 to encourage 3 steps and more, otherwise partial reward
     return [min(1.0, count / 3) for count in matches]
 
-
+# 长度奖励: 正确则越短越高, 错误为0
 def len_reward(completions: list[Dict[str, str]], solution: list[str], **kwargs) -> float:
     """Compute length-based rewards to discourage overthinking and promote token efficiency.
 
@@ -172,7 +166,8 @@ def len_reward(completions: list[Dict[str, str]], solution: list[str], **kwargs)
 
     return rewards
 
-
+# 让正确回答在极短/长时得分高，中间长度得分低. 错误答案在极短/长时惩罚最高
+# 基于余弦函数特性实现 
 def get_cosine_scaled_reward(
         min_value_wrong: float = -1.0,
         max_value_wrong: float = -0.5,
@@ -180,22 +175,12 @@ def get_cosine_scaled_reward(
         max_value_correct: float = 1.0,
         max_len: int = 1000,
 ):
+    # 高阶函数
     def cosine_scaled_reward(completions, solution, **kwargs):
-        """Reward function that scales based on completion length using a cosine schedule.
-
+        """
+        Reward function that scales based on completion length using a cosine schedule.
         Shorter correct solutions are rewarded more than longer ones.
         Longer incorrect solutions are penalized less than shorter ones.
-
-        Args:
-            completions: List of model completions
-            solution: List of ground truth solutions
-
-        This function is parameterized by the following arguments:
-            min_value_wrong: Minimum reward for wrong answers
-            max_value_wrong: Maximum reward for wrong answers
-            min_value_correct: Minimum reward for correct answers
-            max_value_correct: Maximum reward for correct answers
-            max_len: Maximum length for scaling
         """
         contents = [completion[0]["content"] for completion in completions]
         rewards = []
@@ -229,7 +214,7 @@ def get_cosine_scaled_reward(
             is_correct = verify(answer_parsed, gold_parsed)
             gen_len = len(content)
 
-            # Apply cosine scaling based on length
+            # 将长度映射到一个 [-1, 1] 区间内的余弦曲线
             progress = gen_len / max_len
             cosine = math.cos(progress * math.pi)
 
@@ -240,7 +225,7 @@ def get_cosine_scaled_reward(
                 # Swap min/max for incorrect answers
                 min_value = max_value_wrong
                 max_value = min_value_wrong
-
+            # [0, 1] -> [min_value, max_value]
             reward = min_value + 0.5 * (max_value - min_value) * (1.0 + cosine)
             rewards.append(float(reward))
 
@@ -248,7 +233,7 @@ def get_cosine_scaled_reward(
 
     return cosine_scaled_reward
 
-
+# 基于n-gram检测重复情况，对重复次数多的内容给予惩罚
 def get_repetition_penalty_reward(ngram_size: int, max_penalty: float):
     """
     Computes N-gram repetition penalty as described in Appendix C.2 of https://arxiv.org/abs/2502.03373.
@@ -260,7 +245,8 @@ def get_repetition_penalty_reward(ngram_size: int, max_penalty: float):
     """
     if max_penalty > 0:
         raise ValueError(f"max_penalty {max_penalty} should not be positive")
-
+    
+    # 将句子拆分为n-grams
     def zipngram(text: str, ngram_size: int):
         words = text.lower().split()
         return zip(*[words[i:] for i in range(ngram_size)])

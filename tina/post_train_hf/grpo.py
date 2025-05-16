@@ -1,3 +1,4 @@
+import pdb
 import datasets
 from datasets import Dataset, load_dataset
 from datetime import datetime
@@ -45,17 +46,13 @@ def main():
     transformers.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
-
     # Log on each process a small summary
-    logger.warning(
+    logger.info(
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
         + f" distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}")
-    logger.info(f"Model parameters {model_args}")
-    logger.info(f"Post training parameters {pt_args}")
-    logger.info(f"Training parameters {training_args}")
 
     #####################
-    # Set up output paths
+    # 设置输出路径
     #####################
 
     current_time = datetime.now()
@@ -77,7 +74,7 @@ def main():
     training_args.hub_model_id = f"{training_args.hub_model_id}/{model_name_or_path}"
 
     #######################################################################
-    # Load and preprocess dataset (tokenization is handled by GRPO Trainer)
+    # 加载和预处理数据集 tokenization --> GRPOTrainer
     #######################################################################
 
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
@@ -89,19 +86,20 @@ def main():
 
     model_post_train_dataset_name = RL_POST_TRAIN_DATASET_MAP[pt_args.model_post_train_dataset_name]
     if pt_args.model_post_train_dataset_config is not None:
+        # 加载子数据集
         train_dataset = load_dataset(model_post_train_dataset_name, split="train", name=pt_args.model_post_train_dataset_config)
     else:
         train_dataset = load_dataset(model_post_train_dataset_name, split="train")
+    print(train_dataset.column_names)
     # required by GRPOTrainer: (prompt, solution) columns
     if 'solution' not in train_dataset.column_names and 'answer' in train_dataset.column_names:
         train_dataset = train_dataset.rename_column('answer', 'solution')
-
         # Wrap the 'solution' values in $...$
         def wrap_in_math(example):
             return {"solution": f"${example['solution']}$"}
-
         # Apply the transformation to the entire dataset
         train_dataset = train_dataset.map(wrap_in_math)
+
     if 'problem' not in train_dataset.column_names and 'question' in train_dataset.column_names:
         train_dataset = train_dataset.rename_column('question', 'problem')
     if 'problem' not in train_dataset.column_names and 'prompt' in train_dataset.column_names:
@@ -113,11 +111,9 @@ def main():
     if "deepscaler" in pt_args.model_post_train_dataset_name:
         train_dataset = train_dataset.rename_column('solution', 'solution_archive')
         train_dataset = train_dataset.rename_column('answer', 'solution')
-
         # Wrap the 'solution' values in $...$
         def wrap_in_math(example):
             return {"solution": f"${example['solution']}$"}
-
         # Apply the transformation to the entire dataset
         train_dataset = train_dataset.map(wrap_in_math)
 
@@ -125,6 +121,7 @@ def main():
     train_dataset = train_dataset.map(
         make_conv_for_grpo,
         fn_kwargs={"system_prompt": SYSTEM_PROMPT})
+    # ['problem 纯净问题', 'solution 解决办法', 'answer 纯净答案', 'level 难度', 'prompt 系统+problem']
 
     ######################
     # Initialize the model
@@ -133,7 +130,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path,
         torch_dtype=torch.bfloat16,
-        attn_implementation=model_args.attn_implementation,
+        attn_implementation=model_args.attn_implementation, # flash_attention_2
         use_cache=False if training_args.gradient_checkpointing else True)
 
     if model_args.use_peft:
@@ -194,17 +191,18 @@ def main():
         callbacks=callbacks)
 
     #########################
-    # Training and Evaluation
+    # 训练 & 评估
     #########################
 
     logger.info(f"\nStarting training for {training_args.num_train_epochs} epochs.")
 
-    # Check for last checkpoint
+    # 检查是否有 checkpoint 需要恢复
     ckpt = None
     if training_args.resume_from_checkpoint is not None:
         ckpt = training_args.resume_from_checkpoint
     elif os.path.isdir(training_args.output_dir):
         ckpt = get_last_checkpoint(training_args.output_dir)
+        # ckpt= 写法可以同时打印变量名和值
         if ckpt:
             logger.info(f"\nCheckpoint detected, resuming training at {ckpt=}.")
         else:
@@ -222,4 +220,6 @@ def main():
 
 
 if __name__ == "__main__":
+    # os.environ["http_proxy"] = "http://127.0.0.1:7890"
+    # os.environ["https_proxy"] = "http://127.0.0.1:7890"
     main()
